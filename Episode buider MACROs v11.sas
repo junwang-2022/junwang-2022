@@ -610,12 +610,18 @@ where def_cat="&currmod" and (anydigit(code_int) or anyalpha(code_int) or link='
 	if rule="COST" then excl_amt=allowed_amt; else excl_amt=.;
 	run;
 
-	proc sql noprint; select distinct link into :link from def 
+	proc sql noprint; select distinct link, def_rule into :link, :rule from def 
 		where def_cat="&currmod" and %if &curr_set.=incl %then not; anyalpha(code_int); quit;
 	proc sql noprint; select * from &curr_set._all where def_sub="ALL"; quit;
 	%if &sqlobs.>0 %then %do; %let all=1; %end; %else %do; %let all=0; %end;
 
+	%if &rule.=FIRST or &rule.=LAST %then %do;
+	proc sort data=&curr_set._all; by bene_id def_sub def_id module %if &rule.=LAST %then descending; index_dt; run;
+	proc sort data=&curr_set._all nodupkey; by bene_id def_sub def_id module; run;
+	%end;
+
 	%if &post_trig. %then %do;	
+
 	proc sql; create table &curr_set._all as 
 		select distinct %if &ch. %then i.*, e.* ; %else e.*, i.* ;
 		from out.&def_name._medical e, 
@@ -624,6 +630,7 @@ where def_cat="&currmod" and (anydigit(code_int) or anyalpha(code_int) or link='
 		where i.bene_id=e.bene_id and %if %index("&link.", CASE_ID) %then i.case_id = e.case_id; %else i.syskey=e.syskey; and i.def_id=e.def_id 
 			  %if not &all. and not &ch. %then %do; and i.def_sub=e.def_sub %end; 
 	; quit;
+
 	%end;
 %end;
 	

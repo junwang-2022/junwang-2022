@@ -192,7 +192,7 @@ run;
 **************;
 proc sort data=in.enrollment_member out=member nodupkey; by _all_; run;
 proc sort data=member; by memberuid descending createddate; run;
-proc sort data=member out=out.member nodupkey; by memberuid; run;
+proc sort data=member out=out.member_final nodupkey; by memberuid; run;
 proc sort data=member out=zip3; by zip3value; run;
 proc sql; 
 select sum(zip3value="")/count(*) as zip_missing, sum(length(zip3value)=3)/count(*) as zip_s, sum(length(zip3value)>3)/count(*) as zip_m
@@ -457,9 +457,9 @@ if a and not b;
 drop seqnum;
 run;
 
-proc sort data=rx_cost_clean(drop=rxclaimuid) out=rx_cost_dedup dupout=rx_dup nodupkey; by _all_; run;
-proc sort data=rx_cost_dedup; by memberuid filldate ndc11code supplydayscount descending sourcemodifieddate descending allowedamount descending unadjustedprice; run;
-proc sort data=rx_cost_dedup nodupkey; by memberuid filldate ndc11code supplydayscount; run;
+proc sort data=rx_cost_clean(drop=rxclaimuid) out=a dupout=b nodupkey; by _all_; run;
+proc sort data=rx_cost_clean; by memberuid filldate ndc11code supplydayscount descending sourcemodifieddate descending allowedamount descending unadjustedprice; run;
+proc sort data=rx_cost_clean outout=rx_cost_dedup nodupkey; by memberuid filldate ndc11code supplydayscount; run;
 
 *** map missing npi ***;
 proc sql;
@@ -534,9 +534,9 @@ from &name.;
 quit;
 %mend;
 
-%transpose(3, cpt);
+/*%transpose(3, cpt);*/
 %transpose(4, cpt_mod);
-%transpose(5, hcpcs);
+/*%transpose(5, hcpcs);*/
 %transpose(6, hcpcs_mod);
 %transpose(2, apdrg); ** single col, 2 records in sample **;
 %transpose(9, msdrg);
@@ -561,8 +561,9 @@ proc sort data=claim nodupkey; by memberuid claimuid servicedate servicethrudate
 
 proc sql;
 create table out.claim_flat as
-select a.*, coalescec(b.cpt_0, d.hcpcs_0) as cpt, coalescec(c.cpt_mod_0, e.hcpcs_mod_0) as cpt_mod_1, f.msdrg_0 as ms_drg, g.pos_0 as pos, 
-	h.bill_type_0 as bill_type, i.rev_0 as rev_cd, j.adm_dx_0 as adm_dx_cd, j1.e_code_0 as e_code, j2.*, k.*
+select a.*, coalescec(b.cpt_0, d.hcpcs_0) as cpt, coalescec(c.cpt_mod_0, e.hcpcs_mod_0) as cpt_mod_1, coalescec(c.cpt_mod_1, e.hcpcs_mod_1) as cpt_mod_2, 
+	coalescec(c.cpt_mod_2, e.hcpcs_mod_2) as cpt_mod_3, c.cpt_mod_3 as cpt_mod_4,
+	f.msdrg_0 as ms_drg, g.pos_0 as pos, h.bill_type_0 as bill_type, i.rev_0 as rev_cd, j.adm_dx_0 as adm_dx_cd, j1.e_code_0 as e_code, j2.*, k.*
 from claim a
 left join cpt b 		on a.memberuid=b.memberuid and a.claimuid=b.claimuid and a.servicedate=b.servicedate and a.servicethrudate=b.servicethrudate
 left join cpt_mod c 	on a.memberuid=c.memberuid and a.claimuid=c.claimuid and a.servicedate=c.servicedate and a.servicethrudate=c.servicethrudate
@@ -744,7 +745,7 @@ proc sql;
 create table claim_op as
 select distinct memberuid, clm_id, servicedate, servicethrudate, claimstatuscode, ipps, non_ipps, claim_type, bill_type, provideruid, bill_npi, prf_npi, npi, dx_0, dx_1, px_0, pos,
 	max(ms_drg) as ms_drg, sum(paidamount) as paid_amt, sum(copayamount) as copay_amt, sum(allowedamount) as allowed_amt, sum(price) as price, sum(adj_price) as adj_price,
-	max(sourcemodifieddate) as sourcemodifieddate, sum(casetype="LAB")>0 as lab_flag
+	max(sourcemodifieddate) as sourcemodifieddate, sum(casetype="LAB")>0 as lab_flag, max(rxproviderindicator) as rxproviderindicator, max(pcpproviderindicator) as pcpproviderindicator
 from claim_op_line
 group by memberuid, clm_id
 order by memberuid, servicedate, servicethrudate, provideruid;
@@ -758,7 +759,8 @@ if a then do;
 	clm_id=stay_id2;
 end;
 keep memberuid servicedate servicethrudate claimstatuscode clm_id claim_type bill_type admissiondate dischargedate UBPatientDischargeStatusCode
-	bill_npi prf_npi npi provideruid pos dx_0 px_0 ms_drg finaldrg paid_amt copay_amt allowed_amt price adj_price sourcemodifieddate lab_flag ipps non_ipps;
+	bill_npi prf_npi npi provideruid pos adm_dx_cd dx_0 px_0 ms_drg finaldrg paid_amt copay_amt allowed_amt price adj_price sourcemodifieddate lab_flag ipps non_ipps 
+	rxproviderindicator pcpproviderindicator;
 run;
 
 data out.medical2;
@@ -784,7 +786,7 @@ array m(5) price adj_price paid_amt copay_amt allowed_amt;
 	do i=1 to 5;
 	m(i)=round(m(i),0.01);
 	end;
-drop i;
+drop i ;
 if dx_0="" and price=. then delete; /* delete claims with both dx and price(cpt) missing */ 
 run;
 
@@ -803,7 +805,7 @@ proc sql; select sum(dx_0="")/count(*) as dx_missing_pct from medical3; quit;
 *** fix missing dx ***;
 proc sql;
 create table missing_dx as
-select distinct a.*, coalescec(b.clm_id, a.clm_id) as clm_id_new, c.dx_0 as mapped_dx_0
+select distinct a.*, coalescec(b.clm_id, a.clm_id) as clm_id_update, c.dx_0 as mapped_dx_0
 from medical3 a
 left join medical3(where=(dx_0^="")) b on a.dx_0="" and a.memberuid=b.memberuid and a.clm_type=b.clm_type and a.servicedate=b.servicedate and a.servicethrudate=b.servicethrudate
 	and (a.provideruid=b.provideruid or a.provideruid=.)
@@ -815,23 +817,26 @@ proc sort data=missing_dx; by memberuid servicedate servicethrudate provideruid;
 
 proc sql;
 create table out.medical3 as
-select a.*, b.*, coalescec(dx_0, mapped_dx_0) as dx_0_new
-from missing_dx(where=(clm_id=clm_id_new)) a
-left join (select memberuid, clm_id_new, sum(price) as price_new, sum(adj_price) as adj_price_new, sum(paid_amt) as paid_amt_new, sum(copay_amt) as copay_amt_new, sum(allowed_amt) as allowed_amt_new
-			from missing_dx group by memberuid, clm_id_new) b
-on a.memberuid=b.memberuid and a.clm_id_new=b.clm_id_new
+select a.*, b.*, coalescec(dx_0, mapped_dx_0) as dx_0_update
+from missing_dx(where=(clm_id=clm_id_update)) a
+left join (select memberuid, clm_id_update, sum(price) as price_update, sum(adj_price) as adj_price_update, 
+				sum(paid_amt) as paid_amt_update, sum(copay_amt) as copay_amt_update, sum(allowed_amt) as allowed_amt_update
+			from missing_dx group by memberuid, clm_id_update) b
+on a.memberuid=b.memberuid and a.clm_id_update=b.clm_id_update
 order by memberuid, servicedate, servicethrudate, provideruid;
 quit;
 
 proc sql;
-select distinct clm_type, sum(dx_0="")/count(*) as dx_missing, sum(dx_0_new="")/count(*) as final_dx_missing
+select distinct clm_type, sum(dx_0="")/count(*) as dx_missing, sum(dx_0_update="")/count(*) as final_dx_missing
 from out.medical3
 group by clm_type;
 quit;
 proc sql;
-select distinct sum(dx_0="")/count(*) as dx_missing, sum(dx_0_new="")/count(*) as final_dx_missing
+select distinct sum(dx_0="")/count(*) as dx_missing, sum(dx_0_date="")/count(*) as final_dx_missing
 from out.medical3;
 quit;
+
+
 ***************************;
 *** map additional NPIs ***;
 ***************************;
@@ -922,58 +927,73 @@ order by memberuid, servicedate, servicethrudate, provideruid;
 quit;
 
 proc sql;
-create table out.medical4 as
+create table out.medical_final as
 select *
-from med_npi_update2 where clm_id_new not in 
-(select distinct b.clm_id_new
+from med_npi_update2 where clm_id_update not in 
+(select distinct b.clm_id_update
 	from med_npi_update2(where=(bill_npi_update2^="" or prf_npi_update^="")) a,
 		 med_npi_update2(where=(bill_npi_update2="" and prf_npi_update="")) b
 	where a.memberuid=b.memberuid and a.clm_type=b.clm_type and a.servicedate=b.servicedate and a.servicethrudate=b.servicethrudate and a.dx_0=b.dx_0 and a.price=b.price)
 order by memberuid, servicedate, servicethrudate, provideruid;
 quit;
 
+
+*** Check NPI and price missing in the final data ***;
 proc sql;
 select distinct clm_type, count(*) as clm_cnt, 
 	sum(bill_npi^="")/count(*) as bill_npi, sum(bill_npi_update^="")/count(*) as bill_npi_update, sum(bill_npi_update2^="")/count(*) as bill_npi_update2,
-	sum(prf_npi^="")/count(*) as prf_npi, sum(prf_npi_update^="")/count(*) as prf_npi_update, sum(prf_npi_update2^="")/count(*) as prf_npi_update2,
-	sum(bill_npi^="" and prf_npi^="")/count(*) as with_both_npi, sum(bill_npi_update^="" and prf_npi_update^="")/count(*) as with_both_npi_update, 
+	sum(prf_npi^="")/count(*) as prf_npi, sum(prf_npi_update^="")/count(*) as prf_npi_update, sum(prf_npi_update2^="")/count(*) as prf_npi_update2, 
 	sum(bill_npi_update2^="" and prf_npi_update2^="")/count(*) as with_both_npi_update2,
 	sum(adj_price>.)/count(*) as price_pct, 
-	sum(ms_drg="")/count(*) as msdrg_missing, sum(finaldrg="")/count(*) as finaldrg_missing, sum(ms_drg=finaldrg)/sum(ms_drg^="" and finaldrg^="") as drg_match
-from out.medical4
+	sum(ms_drg^="")/count(*) as msdrg_pct, sum(finaldrg^="")/count(*) as finaldrg_pct, sum(ms_drg^="" and ms_drg=finaldrg)/sum(ms_drg^="" and finaldrg^="") as drg_match
+from out.medical_final
 group by clm_type;
 quit;
 
 proc sql;
-create table medical4 as
-select *, round(sum(bill_npi_update2="" and prf_npi_update2="")/count(*),0.01) as npi_missing_pct
-from out.medical4 
-group by memberuid
-order by memberuid, servicedate, servicethrudate, provideruid;
+create table medical_final as
+select *, round(sum(bill_npi_update2="" and prf_npi_update2="")/count(*),0.01) as npi_missing_pct, round(sum(adj_price=.)/count(*),0.01) as price_missing_pct
+from out.medical_final 
+group by memberuid;
 quit;
 
-data medical4;
-set medical4;
-length npi_missing_grp $20.;
+data medical_final;
+set medical_final;
+length npi_missing_grp price_missing_grp $20.;
+
 if npi_missing_pct=0 then npi_missing_grp="1.No missing";
 else if npi_missing_pct<0.2 then npi_missing_grp="2.1-20%";
 else if npi_missing_pct<0.5 then npi_missing_grp="3.20-50%";
 else if npi_missing_pct<0.8 then npi_missing_grp="4.50-80%";
 else if npi_missing_pct<1 then npi_missing_grp="5.80-99%";
 else if npi_missing_pct=1 then npi_missing_grp="6.100% missing";
+
+if price_missing_pct=0 then price_missing_grp="1.No missing";
+else if price_missing_pct<0.2 then price_missing_grp="2.1-20%";
+else if price_missing_pct<0.5 then price_missing_grp="3.20-50%";
+else if price_missing_pct<0.8 then price_missing_grp="4.50-80%";
+else if price_missing_pct<1 then price_missing_grp="5.80-99%";
+else if price_missing_pct=1 then price_missing_grp="6.100% missing";
 run;
 
 proc sql;
-select distinct npi_missing_grp, count(distinct memberuid) as bene_cnt, count(*) as clm_cnt, 
-	sum(bill_npi^="")/count(*) as bill_npi, sum(bill_npi_update^="")/count(*) as bill_npi_update, sum(bill_npi_update2^="")/count(*) as bill_npi_update2,
-	sum(prf_npi^="")/count(*) as prf_npi, sum(prf_npi_update^="")/count(*) as prf_npi_update, sum(prf_npi_update2^="")/count(*) as prf_npi_update2,
-	sum(bill_npi^="" and prf_npi^="")/count(*) as with_both_npi, sum(bill_npi_update^="" and prf_npi_update^="")/count(*) as with_both_npi_update, 
-	sum(bill_npi_update2^="" and prf_npi_update2^="")/count(*) as with_both_npi_update2
-from medical4
-group by npi_missing_grp
+select npi_missing_grp, bene_cnt, bene_cnt/sum(bene_cnt) as bene_pct, bill_npi_update2, prf_npi_update2, with_both_npi_update2 from 
+	(select distinct npi_missing_grp, count(distinct memberuid) as bene_cnt, count(*) as clm_cnt, 
+		sum(bill_npi_update2^="")/count(*) as bill_npi_update2,
+		sum(prf_npi_update2^="")/count(*) as prf_npi_update2,
+		sum(bill_npi_update2^="" and prf_npi_update2^="")/count(*) as with_both_npi_update2
+	from medical_final
+	group by npi_missing_grp)
 order by npi_missing_grp;
 quit;
-
+proc sql;
+select price_missing_grp, bene_cnt, bene_cnt/sum(bene_cnt) as bene_pct, price_pct from 
+	(select distinct price_missing_grp, count(distinct memberuid) as bene_cnt, count(*) as clm_cnt, 
+		sum(adj_price^=.)/count(*) as price_pct
+	from medical_final
+	group by price_missing_grp)
+order by price_missing_grp;
+quit;
 
 
 
@@ -988,29 +1008,29 @@ quit;
 
 proc sql;
 create table clm_id_list as 
-select distinct x.memberuid, x.clm_id_new, y.clm_id as clm_id_ip
-from out.medical4 x
+select distinct x.memberuid, x.clm_type, x.clm_id_update, y.clm_id as clm_id_ip
+from out.medical_final x
 left join out.ip_id_xwalk y 
-on x.memberuid=y.memberuid and x.clm_id_new=y.stay_id2;
+on x.memberuid=y.memberuid and x.clm_id_update=y.stay_id2;
 quit;
 
 proc sql;
 create table all_line as
-select distinct a.*, b.clm_id_new
+select distinct a.*, b.clm_type, b.clm_id_update
 from out.clm_id a, clm_id_list b
-where a.memberuid=b.memberuid and a.clm_id=coalescec(clm_id_ip, b.clm_id_new);
+where a.memberuid=b.memberuid and a.clm_id=coalescec(clm_id_ip, b.clm_id_update);
 quit;
 
 *** create serviceline table ***;
 data serviceline;
 set all_line;
-keep memberuid clm_id clm_id_new servicedate servicethrudate cpt cpt_mod_1-cpt_mod_4 rev_cd 
+keep memberuid clm_type clm_id clm_id_update servicedate servicethrudate cpt cpt_mod_1-cpt_mod_4 rev_cd pos 
 	paidamount copayamount allowedamount price adj_price sourcemodifieddate majorsurgeryindicator roomboardindicator serviceunitquantity;
 run;
-proc sort data=serviceline; by memberuid clm_id_new clm_id descending price; run;
-data out.serviceline;
+proc sort data=serviceline; by memberuid clm_type clm_id_update clm_id descending price; run;
+data out.serviceline_final;
 set serviceline;
-by memberuid clm_id_new;
+by memberuid clm_type clm_id_update;
 retain line_num;
 if first.clm_id then line_num=1;
 else line_num+1;
@@ -1019,103 +1039,35 @@ run;
 *** create dx/px table ***;
 %macro dx_px(type);
 
-proc sort data=all_line(keep=memberuid clm_id clm_id_new claimuid &type._:) out=&type.; by memberuid clm_id_new clm_id claimuid; run;
+proc sort data=all_line(keep=memberuid clm_type clm_id clm_id_update claimuid &type._:) out=&type.; by memberuid clm_type clm_id_update clm_id claimuid; run;
 proc transpose data=&type. out=&type.2;
-by memberuid clm_id_new clm_id claimuid;
+by memberuid clm_type clm_id_update clm_id claimuid;
 var &type._:;
 run;
 
 data &type.3;
-set out.medical3(keep=memberuid clm_id_new &type._0 rename=(&type._0=&type._cd) in=a) &type.2(where=(&type._cd^="") rename=(col1=&type._cd) in=b);
+set out.medical3(keep=memberuid clm_type clm_id_update &type._0 rename=(&type._0=&type._cd) in=a) &type.2(where=(&type._cd^="") rename=(col1=&type._cd) in=b);
 if a then prim_&type.=1; else prim_&type.=0;
 if &type._cd^="";
-keep memberuid clm_id_new &type._cd prim_&type.; 
+keep memberuid clm_type clm_id_update &type._cd prim_&type.; 
 run;
-proc sort data=&type.3; by memberuid clm_id_new &type._cd descending prim_&type.; run;
-proc sort data=&type.3 nodupkey; by memberuid clm_id_new &type._cd; run;
-proc sort data=&type.3; by memberuid clm_id_new descending prim_&type.; run;
+proc sort data=&type.3; by memberuid clm_type clm_id_update &type._cd descending prim_&type.; run;
+proc sort data=&type.3 nodupkey; by memberuid clm_type clm_id_update &type._cd; run;
+proc sort data=&type.3; by memberuid clm_type clm_id_update descending prim_&type.; run;
 
-data out.&type.;
+data out.&type._final;
 set &type.3;
-by memberuid clm_id_new;
+by memberuid clm_type clm_id_update;
 retain seq_num;
-if first.clm_id_new then seq_num=1;
+if first.clm_id_update then seq_num=1;
 else seq_num+1;
-keep memberuid clm_id_new &type._cd seq_num;
+keep memberuid clm_type clm_id_update &type._cd seq_num;
 run;
 
 %mend;
 
 %dx_px(dx);
 %dx_px(px);
-
-
-
-
-
-
-
-
-proc sql;
-create table sample_st as
-select statecode, count(*) as bene_cnt
-from 
-  (select distinct a.memberuid, a.statecode
-  from in.enrollment_member as a
-  inner join in.enrollment_records as b on a.memberuid=b.memberuid
-  where b.effectivedate<= mdy(12,31,2022) and b.terminationdate>= mdy(1,1,2022))
-group by statecode
-order by statecode;
-quit;
-
-proc sql;
-create table sample_st_clm as
-select b.statecode, sum(clm_cnt) as clm_cnt
-from 
-  (select memberuid, count(*) as clm_cnt from out.medical where year(servicethrudate)=2022 group by memberuid) a,
-  out.enrollment_med_payergroupcode b 
-where a.memberuid=b.memberuid
-group by b.statecode
-order by statecode;
-quit;
-
-proc sql;
-create table sample_st_pct as 
-select a.*, b.bene_cnt as sample_cnt, b.bene_cnt/a.bene_cnt as sample_pct, c.clm_cnt as sample_clm_cnt, c.clm_cnt/(calculated sample_pct) as clm_cnt
-from out.inovalon_comm_member_cnt_2022 a
-left join sample_st b on a.statecode=b.statecode
-left join sample_st_clm c on a.statecode=c.statecode
-order by statecode;
-quit;
-proc export data=sample_st_pct outfile="D:\SASData\dua_052882\Sndbx\Jun_W\Inovalon\250K sample QC\sample_st_pct.csv" replace; run;
-
-proc sql;
-select sum(bene_cnt), sum(sample_cnt)
-from sample_st_pct;
-quit;
-
-proc sql;
-select max(seq_num)
-from out.diagnosis;
-quit;
-
-
-proc sql;
-select sum(ms_drg=finaldrg)/count(*) as match_pct
-from out.medical2
-where ms_drg^="" and finaldrg^="";
-quit;
-
-proc sql;
-select sum(ms_drg=finaldrg)/count(*) as match_pct
-from
-	(select distinct a.dischargeuid, input(ms_drg,3.) as ms_drg, finaldrg
-	from oldout.claim_flat2 a, oldout.ippsclaimcost b
-	where ms_drg^="" and finaldrg^=. and a.dischargeuid=b.dischargeuid)
-;
-quit;
-
-
 
 
 
